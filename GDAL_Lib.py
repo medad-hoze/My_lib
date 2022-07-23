@@ -46,6 +46,9 @@ date: 23/07/2022
     # - avr_bands(in_ds)
     # - RasterRize_gdal
     # - del_zero_value_in_raster
+    # - RasterRize_gdal_subprocess
+    # - findRasters
+    # - get_BandsTo3_And_BitTo8
 
 ##############################
 
