@@ -8,6 +8,7 @@ from shapely.geometry import MultiPoint ,MultiLineString, MultiPolygon ,Point , 
 import random
 from shapely.ops import transform
 from shapely.wkt import loads
+import os
 
 # # # # # General fun # # # # #
 #delete_Duplicates
@@ -40,6 +41,8 @@ class gpd_Manager():
     # removes_holes
     # multi_to_single
     # Move_Vrtx_Randomly
+    # findRasters
+    # findLayerSHP
     
     def __init__(self,path):
         if path.endswith('.shp'):
@@ -196,3 +199,121 @@ class gpd_Manager():
 
 
 
+# Find Rasters
+
+
+def convert_bytes(num):
+    for x in ['bytes','KB','MB','GB','TB']:
+        if num < 1024.0:
+            return "%3.lf %s" % (num,x)
+        num /= 1024.0
+
+				
+def file_size(file_path):
+    if os.path.exists(file_path):
+        if os.path.isfile(file_path):
+            file_info = os.stat(file_path)
+            return convert_bytes(file_info.st_size)
+    else:
+        return 'no file found'
+
+
+def Run_over_Folders(folder,typeSearch = '.tif'):
+    img = [root +'\\' + file for root, dirs, files in os.walk(folder)\
+           for file in files if file.endswith(typeSearch)]
+    return img
+
+
+def Count_copys(path):
+
+    poly  = gpd.read_file(path)
+    count_data = poly.groupby('name').size()
+    count_data = count_data.to_frame().reset_index()
+    count_data = poly.merge(count_data, on='name').reset_index()
+    count_data = count_data.rename(columns={0: 'Num'})
+    count_data.to_file(path)
+
+class raster_manager():
+    
+    def __init__(self, filename):
+        ds                = gdal.Open( filename )
+        self.ds           = ds
+        self.filename     = filename                     # שם הקובץ
+        self.name         = os.path.basename(filename)          
+        self.bands        = ds.RasterCount               # מספר ערוצים
+        self.xsize        = ds.RasterXSize               # גודל פיקסל X
+        self.ysize        = ds.RasterYSize               # גודל פיקסך Y
+        self.band_type    = ds.GetRasterBand(1).DataType # סוג 
+        self.projection   = ds.GetProjection()
+        self.geotransform = ds.GetGeoTransform()
+        self.ulx  = self.geotransform[0]                         # נקודה שמאלית עליונה X
+        self.uly  = self.geotransform[3]                         # נקודה שמאלית עליונה Y
+        self.lrx  = self.ulx + self.geotransform[1] * self.xsize # נקודה ימינית תחתונה X
+        self.lry  = self.uly + self.geotransform[5] * self.ysize # נקודה שמאלית תחתונה Y
+        self.musk = zip([self.lrx,self.ulx,self.ulx,self.lrx],[self.lry,self.lry,self.uly,self.uly])
+
+        self.np_array     = np.array(ds.GetRasterBand(1).ReadAsArray())# Get as np array
+
+        ct = ds.GetRasterBand(1).GetRasterColorTable()
+        if ct is not None:
+            self.ct = ct.Clone()
+        else:
+            self.ct = None
+
+
+def findRasters(path,out_put):
+    try:
+        raster1 = raster_manager(path)
+    
+        polygon_geom      = Polygon(raster1.musk)
+        crs               = {'init': 'epsg:2039'}
+        polygon           = gpd.GeoDataFrame( crs=crs, geometry=[polygon_geom])    
+        polygon["bands"]  = raster1.bands
+        polygon["P_Size"] = raster1.xsize/10000
+        polygon["d_type"] = raster1.band_type
+        polygon["path"]   = raster1.filename
+        polygon["name"]   = raster1.name
+        polygon["Size"]   = file_size(path)
+        try:
+            polygon["CRS"] = raster1.projection[8:20]
+        except:
+            polygon["CRS"] = 'Unknown'
+        
+        if os.path.exists(out_put):
+            poly  = gpd.read_file(out_put)
+            merge = poly.append(polygon)
+            merge.to_file(out_put)
+        else:
+            polygon.to_file(out_put)
+    except:
+        print ("Coudnt Read: {}".format(path))
+        
+
+
+def findLayerSHP(folder,out_put):
+    list_shp = Run_over_Folders(folder,'.shp')
+
+    for shp in list_shp:
+        gdf       = gpd.read_file(shp)
+        envelop   = gdf.unary_union.envelope
+        
+        crs                  = {'init': 'epsg:2039'}
+        polygon              = gpd.GeoDataFrame( crs=crs, geometry=[envelop]) 
+        polygon['dis']       = 1
+        polygon              = polygon[polygon['geometry'].geom_type == 'Polygon']
+        polygon              = polygon.dissolve(by='dis')
+        polygon['geom_type'] = gdf['geometry'].geom_type[0]
+        polygon['File_Size'] = file_size(shp)
+        polygon['Full_Path'] = shp
+        polygon['name']      = os.path.basename(shp).split('.')[0]
+
+        if os.path.exists(out_put):
+            poly  = gpd.read_file(out_put)
+            if shp in poly['Full_Path'].tolist():
+                print ('All ready exists')
+                continue
+            merge = poly.append(polygon)
+            merge.to_file(out_put)
+
+        else:
+            polygon.to_file(out_put)
