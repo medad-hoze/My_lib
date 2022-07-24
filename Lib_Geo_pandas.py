@@ -9,6 +9,7 @@ import random
 from shapely.ops import transform
 from shapely.wkt import loads
 import os
+from itertools import product, groupby
 
 # # # # # General fun # # # # #
 #delete_Duplicates
@@ -43,6 +44,9 @@ class gpd_Manager():
     # Move_Vrtx_Randomly
     # findRasters
     # findLayerSHP
+    # Connect_Lines
+    # conectCloseNodesByLine
+    # renameByConnectivity
     
     def __init__(self,path):
         if path.endswith('.shp'):
@@ -317,3 +321,283 @@ def findLayerSHP(folder,out_put):
 
         else:
             polygon.to_file(out_put)
+
+
+
+def check_if_theSame(x,y,x_mean,y_mean):
+    return 1 if x == x_mean and y == y_mean else 0
+
+
+
+def Connect_Lines(path,out_put,dis_search = 50):
+
+    def getStart_End_XY(layer):
+        new_data  = []
+        geometrys = []
+        # index2d   = index.Index()
+        
+        for index2, row in layer.iterrows():
+            coords = [(coords) for coords in list(row['geometry'].coords)]
+            first_last_coord = [Point(coords[0]),Point(coords[-1])]
+            
+            
+            for i in range(len(first_last_coord)):
+                key      = row['key']
+                geometry = first_last_coord[i]
+                if i == 0:
+                    loc = 'start'
+                else:
+                    loc = 'end'
+                
+                new_data.append([key,loc])
+                geometrys.append(geometry)
+                
+        return new_data,geometrys
+
+
+    def Snap_tool(gdf_prepare,parcel_in_proc,precision):
+
+        parcel_in_proc       = parcel_in_proc.to_crs({'init': 'epsg:2039'})
+        parcel_in_proc_union = parcel_in_proc.geometry.unary_union
+        gdf_prepare.geometry = gdf_prepare.geometry.apply(lambda x: snap(x, parcel_in_proc_union, precision))
+        
+        return gdf_prepare
+    
+
+    layer             = gpd.read_file(path)
+    layer['key']       = layer.index
+    layer             = layer.to_crs(epsg=2039)
+    crs               = layer.crs
+    
+    
+    new_data,geometrys = getStart_End_XY(layer)
+                
+    # points end and start
+    start_end = gpd.GeoDataFrame(data = new_data,columns = ['key','loc'],geometry=geometrys,crs = crs)
+    
+    # buffer start end points, dnion them and get and key for each part
+    buffer           = gpd.GeoDataFrame(data = new_data,columns = ['buffer_key','buffer_loc'],\
+                                       geometry = start_end['geometry'].buffer(dis_search/2),crs = crs)
+    df2              = gpd.GeoDataFrame(geometry = [geom for geom in buffer.unary_union.geoms],crs = crs)
+    df2['key_diss']  = df2.index
+    
+    # intersect buffer-union with points to know for each point what buffer connect with
+    res_intersection      = gpd.overlay(start_end,df2 , how='intersection')
+    
+    # get x and y for each point
+    res_intersection['x'] = res_intersection.geometry.apply(lambda val: val.x)
+    res_intersection['y'] = res_intersection.geometry.apply(lambda val: val.y)
+    
+    # get x_mean and y_mean for each buffer
+    stats_pt = res_intersection.groupby('key_diss')[['x','y']].agg('mean').reset_index()
+    stats_pt = stats_pt.rename({'x': 'x_mean', 'y': 'y_mean'}, axis=1)  # new method
+    
+    # connect between points and buffer
+    points_ = res_intersection.merge(stats_pt, on='key_diss')
+    
+    points_['new_point'] = points_.apply(lambda j: check_if_theSame(j.x,j.y,j.x_mean,j.y_mean),axis = 1)
+    points_              = points_[points_['new_point'] == 0]
+    points_['geometry']  = points_.apply(lambda row: Point(row.x_mean,row.y_mean),axis = 1 )
+    
+    new_layer            = Snap_tool(layer,points_,50)
+    
+    new_layer.to_file(out_put)
+
+
+def conectCloseNodesByLine(path,out_put,dis_search = 50):
+
+
+    def getStart_End_XY(layer):
+        new_data  = []
+        geometrys = []
+        # index2d   = index.Index()
+        
+        for index2, row in layer.iterrows():
+            coords = [(coords) for coords in list(row['geometry'].coords)]
+            first_last_coord = [Point(coords[0]),Point(coords[-1])]
+            
+            
+            for i in range(len(first_last_coord)):
+                key      = row['key']
+                geometry = first_last_coord[i]
+                if i == 0:
+                    loc = 'start'
+                else:
+                    loc = 'end'
+                
+                new_data.append([key,loc])
+                geometrys.append(geometry)
+                
+        return new_data,geometrys
+
+
+    layer             = gpd.read_file(path)
+    layer['key']       = layer.index
+    layer             = layer.to_crs(epsg=2039)
+    crs               = layer.crs
+
+
+
+    new_data,geometrys = getStart_End_XY(layer)
+                
+    # points end and start
+    start_end = gpd.GeoDataFrame(data = new_data,columns = ['key','loc'],geometry=geometrys,crs = crs)
+
+    # buffer start end points, dnion them and get and key for each part
+    buffer           = gpd.GeoDataFrame(data = new_data,columns = ['buffer_key','buffer_loc'],\
+                                    geometry = start_end['geometry'].buffer(dis_search/2),crs = crs)
+    df2              = gpd.GeoDataFrame(geometry = [geom for geom in buffer.unary_union.geoms],crs = crs)
+    df2['key_diss']  = df2.index
+
+    # intersect buffer-union with points to know for each point what buffer connect with
+    res_intersection      = gpd.overlay(start_end,df2 , how='intersection')
+
+    # get x and y for each point
+    res_intersection['x'] = res_intersection.geometry.apply(lambda val: val.x)
+    res_intersection['y'] = res_intersection.geometry.apply(lambda val: val.y)
+
+    # get x_mean and y_mean for each buffer
+    stats_pt = res_intersection.groupby('key_diss')[['x','y']].agg('mean').reset_index()
+    stats_pt = stats_pt.rename({'x': 'x_mean', 'y': 'y_mean'}, axis=1)  # new method
+
+    # connect between points and buffer
+    points_ = res_intersection.merge(stats_pt, on='key_diss')
+
+
+
+    points_['new_point'] = points_.apply(lambda j: check_if_theSame(j.x,j.y,j.x_mean,j.y_mean),axis = 1)
+
+    points_              = points_[points_['new_point'] == 0]
+        
+    geoms                = [LineString([Point(xy) for xy in [[i[4],i[5]],[i[6],i[7]]]]) for i in points_.values.tolist()]
+        
+    geo_df2              = gpd.GeoDataFrame(geometry=geoms)
+
+    geo_df2.to_file(out_put)
+
+
+
+
+#  Check if roads are in the same dir and name them 
+
+
+def renameByConnectivity(layer):
+
+    def flatten_list(list_):
+        #[INFO] - flatten list then get uniqes, return as list
+            # Input  = [[1,2,3],[1],[5,1]]
+            # output = [1,2,3,5] 
+            
+        return list(set(np.array(list(list_)).flatten()))
+
+    def dict_to_Roads_connection(dict_):
+        #  [INFO] - get a dict containing the distance and every 2 nodes,and check the 
+        #           farest roads for each other, making  no road will be twice
+            # Input  = {1.467:[1,2],2.467:[1,3],2.0:[2,4]}
+            # output = [[1,3],[2,4]]
+        
+        all_values = flatten_list(dict_.values())
+        exists     = []
+        data       = []
+        
+        for i in all_values:
+            if [k for k, v in dict_.items()]:
+                roads = dict_[max(k for k, v in dict_.items())]
+                dict_ = {key:val for key, val in dict_.items() if val != roads}
+                if roads[0] not in flatten_list(exists) and roads[1] not in flatten_list(exists):
+                    data .append(roads)
+                    exists = exists + roads
+                    
+        return data
+
+
+    def Find_Farest_distance(all_intersection,field = 'Id_Circle'):
+        # [INFO] - func get dataframe and find the farest points of in a specific column, 
+        #            will return a sublist in list of the 2 farest in each column group
+            # input   = Dataframe, field
+            # out put = [[3,2],[6,7],[7,5],[1,4]]    (every value can be found 1 time, 
+            #           and represent the farest disntace in each intersection)
+        
+        data = []
+        cir  = list(all_intersection[field].unique())
+        for i in cir:
+            current = list(all_intersection[all_intersection[field]== i].values.tolist())
+            dic_    = {}
+            for n in current:
+                for j in current:
+                    dis =  n[2].distance(j[2])
+                    if dis > 0:        
+                        dic_[dis] = [n[0],j[0]]
+                        
+            if dic_:
+                connections = dict_to_Roads_connection(dic_)
+                data += connections
+            
+        return data     
+
+
+    def Connect_lists_by_same_value(data):
+        # [INFO] - connect all sublists that contain a shared value
+            #   input  = [[1,2],[3,4],[1,4],[5]]
+            #   output = [[1,2,3,4],[5]]
+
+        l=[set(x) for x in data]
+        for a,b in product(l,l):
+            if a.intersection(b):
+                a.update(b)
+                b.update(a)
+        
+        l = sorted( [sorted(list(x)) for x in l])
+        return list(l for l,_ in groupby(l))
+
+
+    def connect(x,final_list):
+        # [INFO] - Run over the id column of each part and check if he's in the same 
+        #          road group, every group will get the number of the group index.
+            #   input  = 39, [[1,23,31],[39,3,4]]
+            #   output = 1
+        
+        exe = [final_list.index(i) for i in final_list if x in i]
+        if exe: return exe[0] + 1  
+
+    # [INFO] - func clustring continuous polylines, combine strets\roads with
+    #           with the must liklyhood of continuous
+        # input  = polyline as shp
+        # output = polyline as shp with connected parts.
+    
+    layer              = layer.to_crs(epsg=2039)
+    crs                = layer.crs
+    layer['Id']        = layer.index
+    
+    # get the intersections between 2 lines
+    g                = [i for i in layer.geometry]
+    points           = [np.dstack(pts.xy)[0][0].tolist() for i in g for pts in i.boundary]
+    points_intersecs = list({str(points[i]): Point(points[i]) for i in range(len(points))\
+                       if points.count(points[i]) > 1}.values())
+        
+    # Create a Circle around the intersects, and convert him to line
+    Fin_point          = gpd.GeoDataFrame(geometry = points_intersecs,crs = crs)
+    circle             = Fin_point.copy().to_crs(crs= crs)
+    circle["geometry"] = Fin_point.geometry.buffer(1).boundary
+    circle['Id']       = circle.index
+    
+    # get points between the line_buffer to the road
+    columns_data = [(r.Id,t.Id,r.geometry.intersection(t.geometry)) for r in \
+                    layer.itertuples() for t in circle.itertuples()]
+    
+    # create gdf from the point layer and delete all empty rows from new road-circle intersection
+    all_intersection = gpd.GeoDataFrame(data = columns_data,columns = ['Id_line','Id_Circle','geometry'])
+    all_intersection = all_intersection[~all_intersection.is_empty]
+    
+    # check the distance between each nodes  
+    data       = Find_Farest_distance(all_intersection,field = 'Id_Circle')
+    
+    # return the id of the roads that have the must distance between them
+    final_list = Connect_lists_by_same_value(data)
+    
+    # return the data of each road to what group it belongs
+    layer['name'] = layer['Id'].apply(lambda x:connect(x,final_list))
+    
+    layer = layer.drop(columns='Id')
+    
+    return layer
